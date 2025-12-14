@@ -1,0 +1,9 @@
+streamlit==1.36.0
+faiss-cpu==1.8.0
+sentence-transformers==2.6.1
+openai>=1.40.0
+python-dotenv==1.0.1
+nltk==3.8.1
+rank-bm25==0.2.2
+numpy==1.26
+
