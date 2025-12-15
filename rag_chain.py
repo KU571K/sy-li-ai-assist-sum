@@ -3,6 +3,12 @@ from typing import List, Optional
 from openai import OpenAI
 from hybrid_search import SearchEngine, FaissStore
 
+try:
+    import streamlit as st
+    HAS_STREAMLIT = True
+except ImportError:
+    HAS_STREAMLIT = False
+
 
 class RAGChain:
     """
@@ -33,10 +39,19 @@ class RAGChain:
         
         # Инициализация OpenAI клиента
         # Поддерживаем как OpenRouter, так и OpenAI
-        api_key = os.getenv('OPENROUTER_API_KEY') or os.getenv('OPENAI_API_KEY')
+        if HAS_STREAMLIT:
+            try:
+                api_key = st.secrets.get("OPENROUTER_API_KEY") or st.secrets.get("OPENAI_API_KEY")
+            except:
+                api_key = None
+        else:
+            api_key = None
+        
+        if not api_key:
+            api_key = os.getenv('OPENROUTER_API_KEY') or os.getenv('OPENAI_API_KEY')
         if not api_key:
             raise RuntimeError(
-                'API ключ не установлен. Установите OPENROUTER_API_KEY или OPENAI_API_KEY в переменных окружения'
+                'API ключ не установлен. Установите OPENROUTER_API_KEY или OPENAI_API_KEY в переменных окружения или Streamlit secrets'
             )
         
         # Определяем, используется ли OpenRouter (модель содержит "/")

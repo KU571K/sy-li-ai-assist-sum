@@ -163,7 +163,10 @@ def main():
     """Основная функция приложения."""
     
     # Проверка наличия API ключа OpenRouter
-    api_key = os.getenv('OPENROUTER_API_KEY') or os.getenv('OPENAI_API_KEY')
+    try:
+        api_key = st.secrets.get("OPENROUTER_API_KEY") or st.secrets.get("OPENAI_API_KEY")
+    except:
+        api_key = os.getenv('OPENROUTER_API_KEY') or os.getenv('OPENAI_API_KEY')
     
     # Заголовок
     st.title("AI Ассистент личного кабинета студента")
