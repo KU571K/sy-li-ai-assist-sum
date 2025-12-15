@@ -12,13 +12,103 @@ st.set_page_config(
     page_title="AI Ассистент личного кабинета студента",
     page_icon="🎓",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
+
+# Кастомные стили в стиле Синергии
+st.markdown("""
+<style>
+    /* Основные цвета: белый фон, красный текст */
+    .main {
+        background-color: #ffffff;
+    }
+    
+    /* Заголовки красного цвета */
+    h1, h2, h3, h4, h5, h6 {
+        color: #C8102E !important;
+        font-weight: 600;
+    }
+    
+    /* Обычный текст темно-серый для читаемости */
+    .stMarkdown, .stMarkdown p {
+        color: #333333;
+    }
+    
+    /* Чат-сообщения */
+    .stChatMessage {
+        background-color: #ffffff;
+    }
+    
+    /* Кнопки */
+    .stButton > button {
+        background-color: #C8102E;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        padding: 0.5rem 1.5rem;
+        font-weight: 500;
+    }
+    
+    .stButton > button:hover {
+        background-color: #a00e26;
+        color: white;
+    }
+    
+    /* Поле ввода */
+    .stChatInput > div > div > input {
+        border: 1px solid #C8102E;
+        border-radius: 4px;
+    }
+    
+    /* Expander */
+    .streamlit-expanderHeader {
+        color: #C8102E;
+        font-weight: 500;
+    }
+    
+    /* Содержимое expander - черный текст */
+    .streamlit-expanderContent {
+        color: #000000 !important;
+    }
+    
+    .streamlit-expanderContent .stMarkdown,
+    .streamlit-expanderContent .stMarkdown p,
+    .streamlit-expanderContent p {
+        color: #000000 !important;
+    }
+    
+    /* Скрываем sidebar */
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    [data-testid="stSidebar"] {
+        visibility: hidden;
+        height: 0%;
+        position: fixed;
+    }
+    [data-testid="stSidebar"] > div:first-child {
+        padding-top: 0rem;
+    }
+    
+    /* Центрирование и отступы */
+    .block-container {
+        max-width: 900px;
+        padding-top: 2rem;
+    }
+    
+    /* Разделители */
+    hr {
+        border-color: #C8102E;
+        opacity: 0.3;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # Инициализация сессии
 if 'initialized' not in st.session_state:
     st.session_state.initialized = False
     st.session_state.messages = []
+    st.session_state.top_k = 8
 
 
 @st.cache_resource
@@ -52,7 +142,7 @@ def load_rag_chain(_search_engine):
     try:
         rag_chain = RAGChain(
             search_engine=_search_engine,
-            model="gpt-4o-mini",
+            model="openai/gpt-4o-mini",
             temperature=0.7,
             max_tokens=1000
         )
@@ -62,8 +152,9 @@ def load_rag_chain(_search_engine):
         st.info("""
         **Убедитесь, что:**
         
-        1. Установлена переменная окружения `OPENAI_API_KEY`
-        2. API ключ валиден и имеет доступ к модели gpt-4o-mini
+        1. Установлена переменная окружения `OPENROUTER_API_KEY`
+        2. API ключ валиден и имеет доступ к OpenRouter
+        3. Получить ключ можно на https://openrouter.ai
         """)
         return None
 
@@ -71,48 +162,28 @@ def load_rag_chain(_search_engine):
 def main():
     """Основная функция приложения."""
     
-    # Заголовок
-    st.title("🎓 AI Ассистент личного кабинета студента")
-    st.markdown("---")
+    # Проверка наличия API ключа OpenRouter
+    api_key = os.getenv('OPENROUTER_API_KEY') or os.getenv('OPENAI_API_KEY')
     
-    # Боковая панель с настройками
-    with st.sidebar:
-        st.header("⚙️ Настройки")
-        
-        # Проверка наличия API ключа
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
-            st.warning("⚠️ OPENAI_API_KEY не установлен")
-            st.info("Установите переменную окружения OPENAI_API_KEY или создайте файл .env")
-        else:
-            st.success("✅ API ключ найден")
-        
-        st.markdown("---")
-        
-        # Настройки поиска
-        st.subheader("🔍 Параметры поиска")
-        top_k = st.slider(
-            "Количество релевантных фрагментов (top_k)",
-            min_value=3,
-            max_value=10,
-            value=5,
-            step=1,
-            help="Количество фрагментов документов, используемых для генерации ответа"
-        )
-        
-        st.markdown("---")
-        
-        # Информация о системе
-        st.subheader("ℹ️ О системе")
+    # Заголовок
+    st.title("AI Ассистент личного кабинета студента")
+    st.markdown("""
+    <p style='color: #666666; font-size: 1.1em; margin-bottom: 2rem;'>
+    Помогаю находить ответы на вопросы на основе нормативных документов
+    </p>
+    """, unsafe_allow_html=True)
+    
+    # Компактная индикация статуса API ключа
+    if not api_key:
         st.markdown("""
-        Этот AI ассистент помогает студентам находить ответы на вопросы 
-        на основе нормативных документов (законы, приказы, постановления).
-        
-        **Технологии:**
-        - Гибридный поиск (FAISS + BM25)
-        - RAG (Retrieval-Augmented Generation)
-        - GPT-3.5-turbo
-        """)
+        <div style='background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 1rem; margin-bottom: 1.5rem; border-radius: 4px;'>
+            <strong style='color: #856404;'>⚠️ API ключ не установлен</strong><br>
+            <span style='color: #856404; font-size: 0.9em;'>
+            Установите переменную окружения OPENROUTER_API_KEY или создайте файл .env с ключом. 
+            Получить ключ можно на <a href='https://openrouter.ai' style='color: #C8102E;'>openrouter.ai</a>
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
     
     # Загрузка компонентов
     search_engine = load_search_engine()
@@ -121,23 +192,21 @@ def main():
     if search_engine is None or rag_chain is None:
         st.stop()
     
-    # Основная область чата
-    st.subheader("💬 Задайте вопрос")
+    st.markdown("<br>", unsafe_allow_html=True)
     
     # Отображение истории сообщений
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            
-            # Показываем источники для ответов ассистента
-            if message["role"] == "assistant" and "sources" in message:
-                with st.expander("📚 Источники"):
-                    for i, source in enumerate(message["sources"], 1):
+    if st.session_state.messages:
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+                
+                # Показываем источники для ответов ассистента
+                if message["role"] == "assistant" and "sources" in message and message["sources"]:
+                    source = message["sources"][0]  # Берем только первый источник
+                    with st.expander("📚 Источники информации", expanded=False):
                         st.markdown(f"""
-                        **Источник {i}:**
-                        - Документ: `{source.get('doc_id', 'N/A')}`
-                        - Раздел: {source.get('section', 'N/A')}
-                        - Релевантность: {source.get('score', 0):.4f}
+                        Документ: `{source.get('doc_id', 'N/A')}`  
+                        Раздел: {source.get('section', 'N/A')}
                         """)
     
     # Поле ввода вопроса
@@ -153,7 +222,7 @@ def main():
                 try:
                     result = rag_chain.generate_answer(
                         query=prompt,
-                        top_k=top_k,
+                        top_k=st.session_state.top_k,
                         use_reranker=False
                     )
                     
@@ -163,16 +232,14 @@ def main():
                     # Отображаем ответ
                     st.markdown(answer)
                     
-                    # Отображаем источники
+                    # Отображаем источники (только первый)
                     if sources:
-                        with st.expander("📚 Источники информации"):
-                            for i, source in enumerate(sources, 1):
-                                st.markdown(f"""
-                                **Источник {i}:**
-                                - Документ: `{source.get('doc_id', 'N/A')}`
-                                - Раздел: {source.get('section', 'N/A')}
-                                - Релевантность: {source.get('score', 0):.4f}
-                                """)
+                        source = sources[0]  # Берем только первый источник
+                        with st.expander("📚 Источники информации", expanded=False):
+                            st.markdown(f"""
+                            Документ: `{source.get('doc_id', 'N/A')}`  
+                            Раздел: {source.get('section', 'N/A')}
+                            """)
                     
                     # Сохраняем ответ в историю
                     st.session_state.messages.append({
@@ -191,9 +258,11 @@ def main():
     
     # Кнопка очистки истории
     if st.session_state.messages:
-        if st.button("🗑️ Очистить историю", type="secondary"):
-            st.session_state.messages = []
-            st.rerun()
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            if st.button("Очистить историю", type="primary", use_container_width=True):
+                st.session_state.messages = []
+                st.rerun()
 
 
 if __name__ == "__main__":

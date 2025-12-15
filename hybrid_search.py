@@ -89,7 +89,7 @@ class SearchEngine:
         return reranked
 
     # Hybryd search 
-    def hybrid_search(self, query, top_k_dense=10, top_k_bm25=10, final_k=None):
+    def hybrid_search(self, query, top_k_dense=15, top_k_bm25=15, final_k=None):
         final_k = final_k or self.default_top_k
         dense = self.search_dense(query, top_k_dense)
         bm = self.search_bm25(query, top_k_bm25)
