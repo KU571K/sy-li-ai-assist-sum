@@ -102,7 +102,7 @@ def split_into_sections(text: str) -> List[Tuple[str, str]]:
 # Формировние чанков
 SENT_SPLIT = re.compile(r'(?<=[.!?…])\s+')
 
-def chunk_text(section: str, max_chars=1200, overlap=200):
+def chunk_text(section: str, max_chars=1800, overlap=400):
     sents = [s.strip() for s in SENT_SPLIT.split(section) if s.strip()]
     chunks, cur, cur_len = [], [], 0
     for s in sents:
@@ -198,7 +198,7 @@ class FaissStore:
             res.append({"score": float(dist), "meta": self.meta[idx]})
         return res
 
-def process_file(path: str, embed_fn: Callable[[List[str]], np.ndarray], store: FaissStore, max_chars: int = 1200, overlap: int = 200):
+def process_file(path: str, embed_fn: Callable[[List[str]], np.ndarray], store: FaissStore, max_chars: int = 1800, overlap: int = 400):
     text = parse_text_file(path)
     doc_id = extract_doc_id(os.path.basename(path), text=text)
     sections = split_into_sections(text)
@@ -221,7 +221,7 @@ def process_file(path: str, embed_fn: Callable[[List[str]], np.ndarray], store: 
         print(f"Stored {len(chunks)} chunks for {doc_id} — {title[:60]}")
 
 
-def process_folder(folder: str, embed_fn: Callable[[List[str]], np.ndarray], store: FaissStore, max_chars: int = 1200, overlap: int = 200):
+def process_folder(folder: str, embed_fn: Callable[[List[str]], np.ndarray], store: FaissStore, max_chars: int = 1800, overlap: int = 400):
     files = [
         os.path.join(folder, f)
         for f in os.listdir(folder)
@@ -243,8 +243,8 @@ if __name__ == '__main__':
     ap.add_argument('--embedder', choices=['sbert','openai'], default='sbert')
     ap.add_argument('--index', default='faiss.index')
     ap.add_argument('--meta', default='faiss_meta.npy')
-    ap.add_argument('--max-chars', type=int, default=1200, help='Макс. символов в чанке')
-    ap.add_argument('--overlap', type=int, default=200, help='Перекрытие чанков в символах')
+    ap.add_argument('--max-chars', type=int, default=1800, help='Макс. символов в чанке')
+    ap.add_argument('--overlap', type=int, default=400, help='Перекрытие чанков в символах')
     args = ap.parse_args()
 
     dim, embed_fn = build_embedder(args.embedder)
