@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 from hybrid_search import SearchEngine, FaissStore
 from rag_chain import RAGChain
 
+#Доработать UX дизайн, который будет работать как гоуслуги
+
 # Загрузка переменных окружения
 load_dotenv()
 
