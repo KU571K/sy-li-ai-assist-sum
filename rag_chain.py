@@ -132,7 +132,18 @@ class RAGChain:
 
 Вопрос студента: {query}
 
-Внимательно проанализируй вопрос студента. Даже если в контексте используется другая формулировка (например, "правила приема" вместо "как поступить"), найди релевантную информацию по смыслу и ответь на вопрос, используя только информацию из предоставленного контекста."""
+Внимательно проанализируй вопрос студента. Даже если в контексте используется другая формулировка (например, "правила приема" вместо "как поступить"), найди релевантную информацию по смыслу и ответь на вопрос, используя только информацию из предоставленного контекста.
+
+После ответа предложи 4-6 уточняющих вопросов, которые могут быть полезны студенту для более глубокого понимания темы. Вопросы должны быть короткими (до 5-7 слов), конкретными и релевантными теме.
+
+ФОРМАТ ОТВЕТА:
+Сначала напиши основной ответ на вопрос студента.
+
+Затем в конце добавь строку с уточняющими вопросами в формате:
+УТОЧНЕНИЯ: вопрос1|вопрос2|вопрос3|вопрос4|вопрос5|вопрос6
+
+Пример:
+УТОЧНЕНИЯ: Какие документы нужны?|Сроки подачи документов|Куда подавать документы?|Условия поступления|Вступительные испытания|Льготы при поступлении"""
         
         return system_prompt, user_prompt
     
@@ -165,7 +176,8 @@ class RAGChain:
             return {
                 'answer': 'Извините, не удалось найти релевантную информацию для ответа на ваш вопрос.',
                 'sources': [],
-                'context_used': ''
+                'context_used': '',
+                'follow_up_questions': []
             }
         
         # Форматируем контекст
@@ -186,7 +198,25 @@ class RAGChain:
                 max_tokens=self.max_tokens
             )
             
-            answer = response.choices[0].message.content.strip()
+            full_response = response.choices[0].message.content.strip()
+            
+            # Извлекаем уточняющие вопросы из ответа
+            follow_up_questions = []
+            answer = full_response
+            
+            if "УТОЧНЕНИЯ:" in full_response or "уточнения:" in full_response.lower():
+                # Разделяем ответ и уточнения
+                parts = full_response.split("УТОЧНЕНИЯ:")
+                if len(parts) == 1:
+                    parts = full_response.split("уточнения:")
+                
+                if len(parts) == 2:
+                    answer = parts[0].strip()
+                    questions_str = parts[1].strip()
+                    # Разделяем вопросы по символу |
+                    follow_up_questions = [q.strip() for q in questions_str.split("|") if q.strip()]
+                    # Ограничиваем до 6 вопросов
+                    follow_up_questions = follow_up_questions[:6]
             
             # Формируем список источников
             sources = [
@@ -202,7 +232,8 @@ class RAGChain:
             return {
                 'answer': answer,
                 'sources': sources,
-                'context_used': formatted_context
+                'context_used': formatted_context,
+                'follow_up_questions': follow_up_questions if follow_up_questions else []
             }
             
         except Exception as e:
@@ -246,6 +277,7 @@ class RAGChain:
                 'answer': error_msg,
                 'sources': [],
                 'context_used': formatted_context,
+                'follow_up_questions': [],
                 'error': True
             }
 

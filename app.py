@@ -56,6 +56,21 @@ st.markdown("""
         color: white;
     }
     
+    /* Кнопки типовых вопросов и уточнений */
+    button[kind="secondary"] {
+        background-color: #ffffff !important;
+        color: #C8102E !important;
+        border: 1px solid #C8102E !important;
+        border-radius: 8px !important;
+        font-weight: 500 !important;
+    }
+    
+    button[kind="secondary"]:hover {
+        background-color: #C8102E !important;
+        color: white !important;
+        border-color: #C8102E !important;
+    }
+    
     /* Поле ввода */
     .stChatInput > div > div > input {
         border: 1px solid #C8102E;
@@ -111,6 +126,7 @@ if 'initialized' not in st.session_state:
     st.session_state.initialized = False
     st.session_state.messages = []
     st.session_state.top_k = 8
+    st.session_state.pending_query = None  # Для обработки запросов с кнопок
 
 
 @st.cache_resource
@@ -199,9 +215,43 @@ def main():
     
     st.markdown("<br>", unsafe_allow_html=True)
     
+    # Типовые вопросы (отображаются только если нет истории сообщений)
+    if not st.session_state.messages:
+        st.markdown("""
+        <div style='margin-bottom: 2rem;'>
+            <h3 style='color: #333333; font-size: 1.1em; margin-bottom: 1rem; font-weight: 500;'>Популярные вопросы:</h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Список типовых вопросов
+        typical_questions = [
+            "Как поступить в университет?",
+            "Какие документы нужны для поступления?",
+            "Правила приема в вуз",
+            "Стипендии для студентов",
+            "Академический отпуск",
+            "Перевод из одного вуза в другой"
+        ]
+        
+        # Размещаем кнопки в 3 колонки (по 2 вопроса в ряд)
+        cols = st.columns(3)
+        for idx, question in enumerate(typical_questions):
+            col_idx = idx % 3
+            with cols[col_idx]:
+                if st.button(
+                    question,
+                    key=f"quick_question_{idx}",
+                    use_container_width=True,
+                    type="secondary"
+                ):
+                    st.session_state.pending_query = question
+                    st.rerun()
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+    
     # Отображение истории сообщений
     if st.session_state.messages:
-        for message in st.session_state.messages:
+        for msg_idx, message in enumerate(st.session_state.messages):
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
                 
@@ -213,9 +263,43 @@ def main():
                         Документ: `{source.get('doc_id', 'N/A')}`  
                         Раздел: {source.get('section', 'N/A')}
                         """)
+                
+                # Показываем уточняющие вопросы для ответов ассистента в истории
+                if message["role"] == "assistant" and "follow_up_questions" in message:
+                    questions = message.get("follow_up_questions", [])
+                    if questions and len(questions) > 0:
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        # Размещаем кнопки в 2 ряда (по 3 кнопки в ряд)
+                        cols1 = st.columns(3)
+                        cols2 = st.columns(3)
+                        all_cols = cols1 + cols2
+                        
+                        for q_idx, question in enumerate(questions[:6]):  # Максимум 6 вопросов
+                            col = all_cols[q_idx]
+                            with col:
+                                if st.button(
+                                    question,
+                                    key=f"followup_hist_{msg_idx}_{q_idx}",
+                                    use_container_width=True,
+                                    type="secondary"
+                                ):
+                                    st.session_state.pending_query = question
+                                    st.rerun()
+    
+    # Обработка запроса из кнопки типового вопроса
+    prompt_from_button = None
+    if st.session_state.pending_query:
+        prompt_from_button = st.session_state.pending_query
+        st.session_state.pending_query = None  # Сбрасываем флаг
     
     # Поле ввода вопроса
-    if prompt := st.chat_input("Введите ваш вопрос..."):
+    user_input = st.chat_input("Введите ваш вопрос...")
+    
+    # Определяем, какой запрос обрабатывать
+    prompt = prompt_from_button or user_input
+    
+    if prompt:
+        
         # Добавляем вопрос пользователя в историю
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
@@ -233,6 +317,7 @@ def main():
                     
                     answer = result['answer']
                     sources = result['sources']
+                    follow_up_questions = result.get('follow_up_questions', [])
                     
                     # Отображаем ответ
                     st.markdown(answer)
@@ -246,11 +331,34 @@ def main():
                             Раздел: {source.get('section', 'N/A')}
                             """)
                     
-                    # Сохраняем ответ в историю
+                    # Отображаем уточняющие вопросы сразу после ответа
+                    if follow_up_questions:
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        # Размещаем кнопки в 2 ряда (по 3 кнопки в ряд)
+                        cols1 = st.columns(3)
+                        cols2 = st.columns(3)
+                        all_cols = cols1 + cols2
+                        
+                        message_idx = len([m for m in st.session_state.messages if m["role"] == "assistant"])
+                        
+                        for idx, question in enumerate(follow_up_questions[:6]):  # Максимум 6 вопросов
+                            col = all_cols[idx]
+                            with col:
+                                if st.button(
+                                    question,
+                                    key=f"followup_new_{message_idx}_{idx}",
+                                    use_container_width=True,
+                                    type="secondary"
+                                ):
+                                    st.session_state.pending_query = question
+                                    st.rerun()
+                    
+                    # Сохраняем ответ в историю вместе с уточняющими вопросами
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": answer,
-                        "sources": sources
+                        "sources": sources,
+                        "follow_up_questions": follow_up_questions
                     })
                     
                 except Exception as e:
@@ -258,7 +366,9 @@ def main():
                     st.error(error_msg)
                     st.session_state.messages.append({
                         "role": "assistant",
-                        "content": error_msg
+                        "content": error_msg,
+                        "sources": [],
+                        "follow_up_questions": []
                     })
     
     # Кнопка очистки истории
