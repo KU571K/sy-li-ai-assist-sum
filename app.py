@@ -173,7 +173,7 @@ if 'initialized' not in st.session_state:
     st.session_state.initialized = False
     st.session_state.messages = []
     st.session_state.top_k = 8
-    st.session_state.pending_query = None  # Для обработки запросов с кнопок
+    st.session_state.pending_query = None  
 
 
 @st.cache_resource
@@ -181,7 +181,7 @@ def load_search_engine():
     """Загружает поисковый движок с кэшированием."""
     try:
         store = FaissStore(index_path="faiss.index", meta_path="faiss_meta.npy")
-        search_engine = SearchEngine(store, use_reranker=False)  # Включен реранкер для улучшения качества поиска
+        search_engine = SearchEngine(store, use_reranker=True)
         return search_engine
     except FileNotFoundError as e:
         st.error(f"Ошибка загрузки индекса: {e}")

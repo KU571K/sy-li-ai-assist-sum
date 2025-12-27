@@ -32,20 +32,16 @@ def build_bm25(meta):
 class SearchEngine:
     def __init__(self, store: FaissStore, use_reranker: bool = False):
         self.store = store
-        # Используем модель BGE-M3 для лучшего качества эмбеддингов
         self.encoder = SentenceTransformer("BAAI/bge-m3")
         self.reranker = None
         self.use_reranker = use_reranker
         if use_reranker:
-            # Реранкер грузится долго и может тянуть большие веса — включаем только при явной необходимости
-            # Используем BGE-Reranker v2-m3 для согласованности с BGE-M3 эмбеддингами и лучшей работы с русским языком
             self.reranker = CrossEncoder("BAAI/bge-reranker-v2-m3")
         self.bm25 = build_bm25(store.meta)
         self.default_top_k = 5
     
     # Dense search
     def search_dense(self, query, top_k=10):
-        # BGE-M3 нормализует эмбеддинги для лучшего качества поиска
         qvec = self.encoder.encode([query], convert_to_numpy=True, normalize_embeddings=True).astype("float32")
 
         distances, indices = self.store.index.search(qvec, top_k)
@@ -76,14 +72,35 @@ class SearchEngine:
         } for i in idxs]
 
     # Reranker
-    def rerank(self, query, candidates):
+    def rerank(self, query, candidates, max_candidates_for_rerank=20):
+        """Оптимизированный реранкинг с ограничением кандидатов и батчингом."""
         if self.use_reranker and self.reranker:
-            pairs = [(query, c["meta"]["chunk_text"]) for c in candidates]
-            scores = self.reranker.predict(pairs)
+            # Ограничиваем количество кандидатов - обрабатываем только топ по предварительному score
+            candidates_sorted = sorted(candidates, key=lambda x: x.get("score", 0), reverse=True)
+            candidates_to_rerank = candidates_sorted[:max_candidates_for_rerank]
+            
+            # Подготавливаем пары для реранкера
+            pairs = [(query, c["meta"]["chunk_text"]) for c in candidates_to_rerank]
+            
+            # Используем батчинг для параллельной обработки
+            scores = self.reranker.predict(
+                pairs, 
+                batch_size=32,  # Батчинг ускоряет обработку
+                show_progress_bar=False  # Отключаем прогресс-бар для скорости
+            )
+            
             reranked = [
                 {"score": float(s), "meta": c["meta"]}
-                for s, c in zip(scores, candidates)
+                for s, c in zip(scores, candidates_to_rerank)
             ]
+            
+            # Добавляем остальные кандидаты (не прошедшие реранкинг) в конец
+            if len(candidates_sorted) > max_candidates_for_rerank:
+                remaining = [
+                    {"score": c["score"], "meta": c["meta"]} 
+                    for c in candidates_sorted[max_candidates_for_rerank:]
+                ]
+                reranked.extend(remaining)
         else:
             # Без реранкера просто сортируем по имеющемуся score
             reranked = [{"score": c["score"], "meta": c["meta"]} for c in candidates]
@@ -92,7 +109,7 @@ class SearchEngine:
         return reranked
 
     # Hybryd search 
-    def hybrid_search(self, query, top_k_dense=15, top_k_bm25=15, final_k=None):
+    def hybrid_search(self, query, top_k_dense=10, top_k_bm25=10, final_k=None):
         final_k = final_k or self.default_top_k
         dense = self.search_dense(query, top_k_dense)
         bm = self.search_bm25(query, top_k_bm25)
