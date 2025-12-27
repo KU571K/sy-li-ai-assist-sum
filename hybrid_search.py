@@ -32,18 +32,21 @@ def build_bm25(meta):
 class SearchEngine:
     def __init__(self, store: FaissStore, use_reranker: bool = False):
         self.store = store
-        self.encoder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        # Используем модель BGE-M3 для лучшего качества эмбеддингов
+        self.encoder = SentenceTransformer("BAAI/bge-m3")
         self.reranker = None
         self.use_reranker = use_reranker
         if use_reranker:
             # Реранкер грузится долго и может тянуть большие веса — включаем только при явной необходимости
-            self.reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+            # Используем BGE-Reranker v2-m3 для согласованности с BGE-M3 эмбеддингами и лучшей работы с русским языком
+            self.reranker = CrossEncoder("BAAI/bge-reranker-v2-m3")
         self.bm25 = build_bm25(store.meta)
         self.default_top_k = 5
     
     # Dense search
     def search_dense(self, query, top_k=10):
-        qvec = self.encoder.encode([query], convert_to_numpy=True).astype("float32")
+        # BGE-M3 нормализует эмбеддинги для лучшего качества поиска
+        qvec = self.encoder.encode([query], convert_to_numpy=True, normalize_embeddings=True).astype("float32")
 
         distances, indices = self.store.index.search(qvec, top_k)
 

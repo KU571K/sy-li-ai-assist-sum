@@ -10,28 +10,15 @@ except ImportError:
     HAS_STREAMLIT = False
 
 
-class RAGChain:
-    """
-    RAG цепочка для генерации ответов на основе найденного контекста.
-    Использует гибридный поиск для получения релевантных чанков и LLM для генерации ответа.
-    """
-    
+class RAGChain: 
     def __init__(
         self,
         search_engine: SearchEngine,
-        model: str = "gpt-3.5-turbo",
+        model: str = "gpt-4o-mini",
         temperature: float = 0.7,
         max_tokens: int = 1000
     ):
-        """
-        Инициализация RAG цепочки.
-        
-        Args:
-            search_engine: Экземпляр SearchEngine для поиска релевантных документов
-            model: Модель OpenAI для генерации ответов
-            temperature: Температура для генерации (0.0-1.0)
-            max_tokens: Максимальное количество токенов в ответе
-        """
+        #Инициализация RAG цепочки.
         self.search_engine = search_engine
         self.model = model
         self.temperature = temperature
@@ -67,15 +54,6 @@ class RAGChain:
             self.client = OpenAI(api_key=api_key)
     
     def _format_context(self, context_items: List[dict]) -> str:
-        """
-        Форматирует найденные чанки в контекст для промпта.
-        
-        Args:
-            context_items: Список словарей с информацией о найденных чанках
-            
-        Returns:
-            Отформатированная строка с контекстом
-        """
         formatted_parts = []
         for item in context_items:
             chunk = item.get('chunk', '')
@@ -91,16 +69,6 @@ class RAGChain:
         return "\n---\n".join(formatted_parts)
     
     def _build_prompt(self, query: str, context: str) -> str:
-        """
-        Строит промпт для LLM на основе запроса и контекста.
-        
-        Args:
-            query: Вопрос пользователя
-            context: Найденный контекст из документов
-            
-        Returns:
-            Полный промпт для LLM
-        """
         system_prompt = """Ты - AI ассистент личного кабинета студента. 
 Твоя задача - отвечать на вопросы студентов на основе предоставленных документов (законы, приказы, постановления).
 
@@ -150,25 +118,9 @@ class RAGChain:
     def generate_answer(
         self,
         query: str,
-        top_k: int = 5,
+        top_k: int = 10,
         use_reranker: bool = False
     ) -> dict:
-        """
-        Генерирует ответ на вопрос пользователя используя RAG подход.
-        
-        Args:
-            query: Вопрос пользователя
-            top_k: Количество релевантных чанков для использования
-            use_reranker: Использовать ли реранкер для улучшения результатов
-            
-        Returns:
-            Словарь с ответом и метаданными:
-            {
-                'answer': str - сгенерированный ответ,
-                'sources': List[dict] - источники использованные для ответа,
-                'context_used': str - использованный контекст
-            }
-        """
         # Получаем релевантный контекст через гибридный поиск
         context_items = self.search_engine.retrieve_context(query, top_k=top_k)
         

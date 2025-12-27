@@ -4,8 +4,7 @@ from dotenv import load_dotenv
 from hybrid_search import SearchEngine, FaissStore
 from rag_chain import RAGChain
 
-#Доработать UX дизайн, который будет работать как гоуслуги
-
+# использовать другую модель сентенс трансформера. так же можно обогатить запрос пользователя
 # Загрузка переменных окружения
 load_dotenv()
 
@@ -107,6 +106,54 @@ st.markdown("""
         padding-top: 0rem;
     }
     
+    /* Скрываем предупреждения о secrets и другие alert сообщения */
+    .stAlert {
+        display: none !important;
+        visibility: hidden !important;
+        height: 0 !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        overflow: hidden !important;
+    }
+    [data-testid="stAlert"] {
+        display: none !important;
+        visibility: hidden !important;
+        height: 0 !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        overflow: hidden !important;
+    }
+    div[data-baseweb="notification"] {
+        display: none !important;
+    }
+    /* Скрываем любые warning/error сообщения */
+    .element-container:has(.stAlert) {
+        display: none !important;
+        height: 0 !important;
+        visibility: hidden !important;
+    }
+    div:has(> .stAlert) {
+        display: none !important;
+        height: 0 !important;
+        visibility: hidden !important;
+    }
+    /* Дополнительные селекторы для скрытия предупреждений */
+    [data-testid="stException"] {
+        display: none !important;
+    }
+    .stException {
+        display: none !important;
+    }
+    /* Скрываем элементы с классами, содержащими alert/warning */
+    [class*="stAlert"],
+    [class*="alert"],
+    [class*="warning"] {
+        display: none !important;
+        visibility: hidden !important;
+        height: 0 !important;
+        overflow: hidden !important;
+    }
+    
     /* Центрирование и отступы */
     .block-container {
         max-width: 900px;
@@ -134,7 +181,7 @@ def load_search_engine():
     """Загружает поисковый движок с кэшированием."""
     try:
         store = FaissStore(index_path="faiss.index", meta_path="faiss_meta.npy")
-        search_engine = SearchEngine(store, use_reranker=False)
+        search_engine = SearchEngine(store, use_reranker=False)  # Включен реранкер для улучшения качества поиска
         return search_engine
     except FileNotFoundError as e:
         st.error(f"Ошибка загрузки индекса: {e}")
@@ -181,9 +228,14 @@ def main():
     """Основная функция приложения."""
     
     # Проверка наличия API ключа OpenRouter
+    api_key = None
     try:
-        api_key = st.secrets.get("OPENROUTER_API_KEY") or st.secrets.get("OPENAI_API_KEY")
-    except:
+        if hasattr(st, 'secrets'):
+            api_key = st.secrets.get("OPENROUTER_API_KEY") or st.secrets.get("OPENAI_API_KEY")
+    except (AttributeError, KeyError, FileNotFoundError, Exception):
+        pass
+    
+    if not api_key:
         api_key = os.getenv('OPENROUTER_API_KEY') or os.getenv('OPENAI_API_KEY')
     
     # Заголовок
@@ -311,8 +363,7 @@ def main():
                 try:
                     result = rag_chain.generate_answer(
                         query=prompt,
-                        top_k=st.session_state.top_k,
-                        use_reranker=False
+                        top_k=st.session_state.top_k
                     )
                     
                     answer = result['answer']

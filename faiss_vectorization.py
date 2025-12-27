@@ -123,18 +123,16 @@ def chunk_text(section: str, max_chars=1800, overlap=400):
     return chunks
 
 def build_embedder(method: str) -> tuple[int, Callable[[List[str]], np.ndarray]]:
-    """
-    Возвращает размерность и функцию эмбеддера.
-    Модели и клиенты создаются один раз, чтобы не тратить время при батчинге.
-    """
     if method == 'sbert':
         if SentenceTransformer is None:
             raise RuntimeError('sentence-transformers not installed')
-        model = SentenceTransformer('all-MiniLM-L6-v2')
+        # Используем модель BGE-M3 для лучшего качества эмбеддингов
+        model = SentenceTransformer("BAAI/bge-m3")
         dim = model.get_sentence_embedding_dimension()
 
         def encode(texts: List[str]) -> np.ndarray:
-            return model.encode(texts, convert_to_numpy=True)
+            # BGE-M3 поддерживает мультимодальность, но для текста используем стандартный encode
+            return model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
 
         return dim, encode
 
