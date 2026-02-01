@@ -107,7 +107,7 @@ def summarize_section(title: str, body: str) -> str:
 """
 
     response = client.chat.completions.create(
-        model="gpt-4o-mini",  # модель через OpenRouter
+        model="gpt-5-mini",  
         messages=[
             {"role": "user", "content": prompt}
         ],

@@ -1,10 +1,11 @@
 import os
 import streamlit as st
 from dotenv import load_dotenv
+from openai import OpenAI
 from hybrid_search import SearchEngine, FaissStore
 from rag_chain import RAGChain
+from query_extender import QueryExpander
 
-# использовать другую модель сентенс трансформера. так же можно обогатить запрос пользователя
 # Загрузка переменных окружения
 load_dotenv()
 
@@ -173,7 +174,24 @@ if 'initialized' not in st.session_state:
     st.session_state.initialized = False
     st.session_state.messages = []
     st.session_state.top_k = 8
-    st.session_state.pending_query = None  
+    st.session_state.pending_query = None
+    st.session_state.pending_clarification = None  # Хранит данные для уточнения
+    st.session_state.original_query = None  # Исходный вопрос пользователя  
+
+
+def _create_query_expander():
+    try:
+        api_key = st.secrets.get("OPENROUTER_API_KEY") or st.secrets.get("OPENAI_API_KEY")
+    except:
+        api_key = None
+    
+    if not api_key:
+        api_key = os.getenv('OPENROUTER_API_KEY') or os.getenv('OPENAI_API_KEY')
+    
+    if api_key:
+        client = OpenAI(api_key=api_key, base_url="https://api.artemox.com/v1")
+        return QueryExpander(client, model="gpt-5-mini", enable_expansion=True)
+    return None
 
 
 @st.cache_resource
@@ -181,7 +199,8 @@ def load_search_engine():
     """Загружает поисковый движок с кэшированием."""
     try:
         store = FaissStore(index_path="faiss.index", meta_path="faiss_meta.npy")
-        search_engine = SearchEngine(store, use_reranker=True)
+        query_expander = None 
+        search_engine = SearchEngine(store, use_reranker=False, query_expander=None)
         return search_engine
     except FileNotFoundError as e:
         st.error(f"Ошибка загрузки индекса: {e}")
@@ -207,7 +226,7 @@ def load_rag_chain(_search_engine):
     try:
         rag_chain = RAGChain(
             search_engine=_search_engine,
-            model="openai/gpt-4o-mini",
+            model="gpt-5-mini",
             temperature=0.7,
             max_tokens=1000
         )
@@ -225,8 +244,6 @@ def load_rag_chain(_search_engine):
 
 
 def main():
-    """Основная функция приложения."""
-    
     # Проверка наличия API ключа OpenRouter
     api_key = None
     try:
@@ -309,33 +326,30 @@ def main():
                 
                 # Показываем источники для ответов ассистента
                 if message["role"] == "assistant" and "sources" in message and message["sources"]:
-                    source = message["sources"][0]  # Берем только первый источник
+                    source = message["sources"][0]
                     with st.expander("📚 Источники информации", expanded=False):
                         st.markdown(f"""
                         Документ: `{source.get('doc_id', 'N/A')}`  
                         Раздел: {source.get('section', 'N/A')}
                         """)
                 
-                # Показываем уточняющие вопросы для ответов ассистента в истории
-                if message["role"] == "assistant" and "follow_up_questions" in message:
-                    questions = message.get("follow_up_questions", [])
-                    if questions and len(questions) > 0:
+                # Показываем варианты уточнения (стиль Госуслуг)
+                if message["role"] == "assistant" and "clarification_options" in message:
+                    options = message.get("clarification_options", [])
+                    if options:
                         st.markdown("<br>", unsafe_allow_html=True)
-                        # Размещаем кнопки в 2 ряда (по 3 кнопки в ряд)
-                        cols1 = st.columns(3)
-                        cols2 = st.columns(3)
-                        all_cols = cols1 + cols2
+                        cols = st.columns(min(len(options), 3))
                         
-                        for q_idx, question in enumerate(questions[:6]):  # Максимум 6 вопросов
-                            col = all_cols[q_idx]
-                            with col:
+                        for q_idx, option in enumerate(options):
+                            col_idx = q_idx % 3
+                            with cols[col_idx]:
                                 if st.button(
-                                    question,
-                                    key=f"followup_hist_{msg_idx}_{q_idx}",
+                                    option,
+                                    key=f"clarify_hist_{msg_idx}_{q_idx}",
                                     use_container_width=True,
                                     type="secondary"
                                 ):
-                                    st.session_state.pending_query = question
+                                    st.session_state.pending_query = option
                                     st.rerun()
     
     # Обработка запроса из кнопки типового вопроса
@@ -351,76 +365,123 @@ def main():
     prompt = prompt_from_button or user_input
     
     if prompt:
+        # Проверяем, это выбор из уточняющих вариантов или новый вопрос
+        is_clarification_choice = st.session_state.pending_clarification is not None
         
         # Добавляем вопрос пользователя в историю
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
         
-        # Генерируем ответ
         with st.chat_message("assistant"):
-            with st.spinner("🔍 Поиск информации и генерация ответа..."):
-                try:
-                    result = rag_chain.generate_answer(
-                        query=prompt,
-                        top_k=st.session_state.top_k
-                    )
+            try:
+                if is_clarification_choice:
+                    # Это выбор уточнения — сразу генерируем ответ
+                    with st.spinner("🔍 Генерация ответа..."):
+                        context_items = st.session_state.pending_clarification.get('context_items', [])
+                        result = rag_chain.generate_answer(
+                            query=prompt,
+                            top_k=st.session_state.top_k,
+                            context_items=context_items
+                        )
+                        st.session_state.pending_clarification = None
+                        st.session_state.original_query = None
+                        
+                        answer = result['answer']
+                        sources = result['sources']
+                        
+                        st.markdown(answer)
+                        
+                        if sources:
+                            source = sources[0]
+                            with st.expander("📚 Источники информации", expanded=False):
+                                st.markdown(f"""
+                                Документ: `{source.get('doc_id', 'N/A')}`  
+                                Раздел: {source.get('section', 'N/A')}
+                                """)
+                        
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": answer,
+                            "sources": sources
+                        })
+                else:
+                    # Новый вопрос — сначала проверяем, нужно ли уточнение
+                    with st.spinner("🔍 Анализ вопроса..."):
+                        clarification = rag_chain.clarify_question(
+                            query=prompt,
+                            top_k=st.session_state.top_k
+                        )
                     
-                    answer = result['answer']
-                    sources = result['sources']
-                    follow_up_questions = result.get('follow_up_questions', [])
-                    
-                    # Отображаем ответ
-                    st.markdown(answer)
-                    
-                    # Отображаем источники (только первый)
-                    if sources:
-                        source = sources[0]  # Берем только первый источник
-                        with st.expander("📚 Источники информации", expanded=False):
-                            st.markdown(f"""
-                            Документ: `{source.get('doc_id', 'N/A')}`  
-                            Раздел: {source.get('section', 'N/A')}
-                            """)
-                    
-                    # Отображаем уточняющие вопросы сразу после ответа
-                    if follow_up_questions:
+                    if clarification['needs_clarification'] and clarification['options']:
+                        # Нужно уточнение — показываем варианты
+                        clarification_text = clarification['clarification_text']
+                        options = clarification['options']
+                        
+                        st.markdown(f"**{clarification_text}**")
                         st.markdown("<br>", unsafe_allow_html=True)
-                        # Размещаем кнопки в 2 ряда (по 3 кнопки в ряд)
-                        cols1 = st.columns(3)
-                        cols2 = st.columns(3)
-                        all_cols = cols1 + cols2
                         
-                        message_idx = len([m for m in st.session_state.messages if m["role"] == "assistant"])
+                        # Сохраняем контекст для следующего этапа
+                        st.session_state.pending_clarification = clarification
+                        st.session_state.original_query = prompt
                         
-                        for idx, question in enumerate(follow_up_questions[:6]):  # Максимум 6 вопросов
-                            col = all_cols[idx]
-                            with col:
+                        # Показываем варианты в кнопках
+                        cols = st.columns(min(len(options), 3))
+                        message_idx = len(st.session_state.messages)
+                        
+                        for idx, option in enumerate(options):
+                            col_idx = idx % 3
+                            with cols[col_idx]:
                                 if st.button(
-                                    question,
-                                    key=f"followup_new_{message_idx}_{idx}",
+                                    option,
+                                    key=f"clarify_{message_idx}_{idx}",
                                     use_container_width=True,
                                     type="secondary"
                                 ):
-                                    st.session_state.pending_query = question
+                                    st.session_state.pending_query = option
                                     st.rerun()
-                    
-                    # Сохраняем ответ в историю вместе с уточняющими вопросами
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": answer,
-                        "sources": sources,
-                        "follow_up_questions": follow_up_questions
-                    })
-                    
-                except Exception as e:
-                    error_msg = f"Произошла ошибка: {str(e)}"
-                    st.error(error_msg)
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": error_msg,
-                        "sources": [],
-                        "follow_up_questions": []
-                    })
+                        
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": f"**{clarification_text}**",
+                            "clarification_options": options
+                        })
+                    else:
+                        # Вопрос конкретный — сразу отвечаем
+                        with st.spinner("🔍 Генерация ответа..."):
+                            result = rag_chain.generate_answer(
+                                query=prompt,
+                                top_k=st.session_state.top_k,
+                                context_items=clarification.get('context_items')
+                            )
+                        
+                        answer = result['answer']
+                        sources = result['sources']
+                        
+                        st.markdown(answer)
+                        
+                        if sources:
+                            source = sources[0]
+                            with st.expander("📚 Источники информации", expanded=False):
+                                st.markdown(f"""
+                                Документ: `{source.get('doc_id', 'N/A')}`  
+                                Раздел: {source.get('section', 'N/A')}
+                                """)
+                        
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": answer,
+                            "sources": sources
+                        })
+                        
+            except Exception as e:
+                error_msg = f"Произошла ошибка: {str(e)}"
+                st.error(error_msg)
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": error_msg,
+                    "sources": []
+                })
     
     # Кнопка очистки истории
     if st.session_state.messages:

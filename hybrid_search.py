@@ -1,14 +1,24 @@
 import os
 import re
 import numpy as np
-from typing import Optional
+from typing import Optional, List, TYPE_CHECKING
 import faiss
+import torch
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from rank_bm25 import BM25Okapi
-from nltk.tokenize import word_tokenize
-import nltk
 
-nltk.download("punkt", quiet=True)
+if TYPE_CHECKING:
+    from query_extender import QueryExpander
+
+# Определяем device: CUDA если доступен, иначе CPU
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Быстрый токенизатор на регулярке (вместо NLTK word_tokenize)
+_TOKEN_PATTERN = re.compile(r'[а-яёa-z0-9]+', re.IGNORECASE)
+
+def fast_tokenize(text: str) -> List[str]:
+    """Быстрая токенизация через регулярку."""
+    return _TOKEN_PATTERN.findall(text.lower())
 
 # FaissStore
 class FaissStore:
@@ -24,19 +34,25 @@ class FaissStore:
 
 def build_bm25(meta):
     corpus = [m["chunk_text"] for m in meta]
-    tokenized = [word_tokenize(t.lower()) for t in corpus]
+    tokenized = [fast_tokenize(t) for t in corpus]
     return BM25Okapi(tokenized)
 
 
 # Поисковый движок
 class SearchEngine:
-    def __init__(self, store: FaissStore, use_reranker: bool = False):
+    def __init__(
+        self, 
+        store: FaissStore, 
+        use_reranker: bool = False,
+        query_expander: Optional["QueryExpander"] = None
+    ):
         self.store = store
-        self.encoder = SentenceTransformer("BAAI/bge-m3")
+        self.encoder = SentenceTransformer("BAAI/bge-m3", device=DEVICE)
         self.reranker = None
         self.use_reranker = use_reranker
+        self.query_expander = query_expander
         if use_reranker:
-            self.reranker = CrossEncoder("BAAI/bge-reranker-v2-m3")
+            self.reranker = CrossEncoder("BAAI/bge-reranker-v2-m3", device=DEVICE)
         self.bm25 = build_bm25(store.meta)
         self.default_top_k = 5
     
@@ -60,7 +76,7 @@ class SearchEngine:
 
     # BM25 search
     def search_bm25(self, query, top_k=10):
-        tokens = word_tokenize(query.lower())
+        tokens = fast_tokenize(query)
         scores = self.bm25.get_scores(tokens)
 
         idxs = np.argsort(scores)[::-1][:top_k]
@@ -108,16 +124,65 @@ class SearchEngine:
         reranked.sort(key=lambda x: x["score"], reverse=True)
         return reranked
 
-    # Hybryd search 
+    # Reciprocal Rank Fusion
+    def _rrf_score(self, dense_results, bm25_results, k=60):
+        """Объединяет результаты dense и BM25 через RRF."""
+        rrf_scores = {}
+        
+        # RRF для dense результатов
+        for rank, item in enumerate(dense_results, start=1):
+            idx = item["idx"]
+            rrf_scores[idx] = rrf_scores.get(idx, 0) + 1 / (k + rank)
+        
+        # RRF для BM25 результатов
+        for rank, item in enumerate(bm25_results, start=1):
+            idx = item["idx"]
+            rrf_scores[idx] = rrf_scores.get(idx, 0) + 1 / (k + rank)
+        
+        return rrf_scores
+
+    def _multi_query_rrf(self, all_results: List[List[dict]], k=60):
+        """Объединяет результаты из нескольких запросов через RRF."""
+        rrf_scores = {}
+        all_items = {}
+        
+        for results in all_results:
+            for rank, item in enumerate(results, start=1):
+                idx = item["idx"]
+                rrf_scores[idx] = rrf_scores.get(idx, 0) + 1 / (k + rank)
+                if idx not in all_items:
+                    all_items[idx] = item
+        
+        return rrf_scores, all_items
+
+    # Hybrid search 
     def hybrid_search(self, query, top_k_dense=10, top_k_bm25=10, final_k=None):
         final_k = final_k or self.default_top_k
-        dense = self.search_dense(query, top_k_dense)
-        bm = self.search_bm25(query, top_k_bm25)
-        combined = {c["idx"]: c for c in dense}
-        for c in bm:
-            combined.setdefault(c["idx"], c)
-
-        candidates = list(combined.values())
+        
+        # Расширяем запрос если доступен expander
+        if self.query_expander:
+            queries = self.query_expander.expand(query)
+        else:
+            queries = [query]
+        
+        # Multi-query поиск: собираем результаты по всем запросам
+        all_dense = []
+        all_bm25 = []
+        for q in queries:
+            all_dense.append(self.search_dense(q, top_k_dense))
+            all_bm25.append(self.search_bm25(q, top_k_bm25))
+        
+        # RRF по всем результатам (dense + BM25 для каждого запроса)
+        all_results = all_dense + all_bm25
+        rrf_scores, all_items = self._multi_query_rrf(all_results)
+        
+        # Собираем кандидатов с RRF score
+        candidates = [
+            {"idx": idx, "score": rrf_scores[idx], "meta": item["meta"]}
+            for idx, item in all_items.items()
+        ]
+        
+        # Реранкинг по оригинальному запросу
         return self.rerank(query, candidates)[:final_k]
 
     def retrieve_context(self, query: str, top_k: Optional[int] = None):

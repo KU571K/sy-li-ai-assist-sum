@@ -14,7 +14,7 @@ class RAGChain:
     def __init__(
         self,
         search_engine: SearchEngine,
-        model: str = "gpt-4o-mini",
+        model: str = "gpt-5-mini",
         temperature: float = 0.7,
         max_tokens: int = 1000
     ):
@@ -41,17 +41,11 @@ class RAGChain:
                 'API ключ не установлен. Установите OPENROUTER_API_KEY или OPENAI_API_KEY в переменных окружения или Streamlit secrets'
             )
         
-        # Определяем, используется ли OpenRouter (модель содержит "/")
-        # Для OpenRouter нужно указать base_url
-        if '/' in model:
-            # OpenRouter использует стандартный OpenAI API формат, но другой endpoint
-            self.client = OpenAI(
-                api_key=api_key,
-                base_url="https://openrouter.ai/api/v1"
-            )
-        else:
-            # Стандартный OpenAI
-            self.client = OpenAI(api_key=api_key)
+        base_url = os.getenv("OPENROUTER_URL") or "https://api.artemox.com/v1"
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+
+        # Artemox и аналоги принимают короткие имена (gpt-4o, gpt-4o-mini), без "openai/"
+        self.model = model.split("/")[-1] if "/" in model else model
     
     def _format_context(self, context_items: List[dict]) -> str:
         formatted_parts = []
@@ -68,77 +62,172 @@ class RAGChain:
         
         return "\n---\n".join(formatted_parts)
     
-    def _build_prompt(self, query: str, context: str) -> str:
-        system_prompt = """Ты - AI ассистент личного кабинета студента. 
-Твоя задача - отвечать на вопросы студентов на основе предоставленных документов (законы, приказы, постановления).
+    def _build_clarification_prompt(self, query: str, context: str) -> tuple:
+        """Промпт для уточнения общего вопроса (первый этап диалога)."""
+        system_prompt = """Ты — AI-ассистент личного кабинета студента в стиле портала Госуслуги.
 
-ВАЖНО: Вопросы студентов могут быть сформулированы простым языком, но в документах используется формальная терминология.
-Ты должен находить релевантную информацию ПО СМЫСЛУ, а не только по точным словам.
+ТВОЯ ЗАДАЧА: Проанализировать вопрос пользователя и предложить уточняющие варианты.
 
-Примеры соответствий формулировок:
-- "Как поступить?" → "правила приема", "порядок приема", "процедура поступления", "условия приема"
-- "Что нужно для поступления?" → "требования", "документы", "условия приема"
-- "Как подать документы?" → "порядок подачи", "сроки подачи", "документы для приема"
-- "Когда начинается прием?" → "сроки приема", "период приема", "даты приема"
+АЛГОРИТМ:
+1. Определи, является ли вопрос ОБЩИМ (требует уточнения) или КОНКРЕТНЫМ (можно сразу ответить)
+2. Если вопрос ОБЩИЙ — предложи 3-5 конкретных направлений на основе контекста
+3. Если вопрос КОНКРЕТНЫЙ — верни КОНКРЕТНЫЙ: да
 
-Инструкции:
-1. Внимательно проанализируй вопрос студента и определи, какая информация ему нужна
-2. Ищи в контексте информацию ПО СМЫСЛУ, используя синонимы и связанные термины
-3. Если вопрос начинается с "как", "что", "когда", "где" - ищи соответствующие правила, порядки, процедуры, сроки, требования
-4. Внимательно проанализируй весь предоставленный контекст, даже если формулировки отличаются
-5. Собери информацию из всех релевантных чанков, даже если она разбита на несколько частей
-6. Отвечай только на основе предоставленного контекста, но используй всю доступную информацию
-7. Если информация разбросана по нескольким чанкам, объедини её в полный ответ
-8. Если в контексте нет информации для ответа, честно скажи об этом
-9. Отвечай на русском языке, четко и структурированно
-10. При необходимости ссылайся на конкретные документы или разделы
-11. Будь вежливым и профессиональным"""
-        
-        user_prompt = f"""Контекст из документов:
+ПРИМЕРЫ ОБЩИХ ВОПРОСОВ:
+- "Как поступить?" → требует уточнения (правила, документы, сроки, льготы)
+- "Расскажи про стипендию" → требует уточнения (виды, размер, условия получения)
+- "Что делать если..." → требует уточнения (разные сценарии)
 
+ПРИМЕРЫ КОНКРЕТНЫХ ВОПРОСОВ:
+- "Какие документы нужны для поступления на бюджет?" → можно ответить сразу
+- "Размер социальной стипендии" → можно ответить сразу
+- "Сроки подачи документов на магистратуру" → можно ответить сразу"""
+
+        user_prompt = f"""КОНТЕКСТ ИЗ ДОКУМЕНТОВ:
 {context}
 
-Вопрос студента: {query}
+ВОПРОС ПОЛЬЗОВАТЕЛЯ: {query}
 
-Внимательно проанализируй вопрос студента. Даже если в контексте используется другая формулировка (например, "правила приема" вместо "как поступить"), найди релевантную информацию по смыслу и ответь на вопрос, используя только информацию из предоставленного контекста.
+Проанализируй вопрос. Если он ОБЩИЙ, предложи уточняющие варианты в формате:
+УТОЧНЕНИЕ: Вы хотите узнать:
+ВАРИАНТЫ: вариант1|вариант2|вариант3|вариант4
 
-После ответа предложи 4-6 уточняющих вопросов, которые могут быть полезны студенту для более глубокого понимания темы. Вопросы должны быть короткими (до 5-7 слов), конкретными и релевантными теме.
+Если вопрос КОНКРЕТНЫЙ, верни:
+КОНКРЕТНЫЙ: да"""
+
+        return system_prompt, user_prompt
+
+    def _build_answer_prompt(self, query: str, context: str) -> tuple:
+        """Промпт для генерации ответа (второй этап или прямой ответ)."""
+        system_prompt = """Ты — AI-ассистент личного кабинета студента в стиле портала Госуслуги.
+
+ПРАВИЛА:
+1. Отвечай ТОЛЬКО на основе предоставленного контекста
+2. Если информации нет — честно скажи об этом
+3. Ссылайся на конкретные документы
 
 ФОРМАТ ОТВЕТА:
-Сначала напиши основной ответ на вопрос студента.
+- Начни с краткого резюме (1-2 предложения)
+- Используй маркированные списки
+- Выделяй важное: сроки, суммы, требования
+- Структурируй длинные ответы подзаголовками"""
 
-Затем в конце добавь строку с уточняющими вопросами в формате:
-УТОЧНЕНИЯ: вопрос1|вопрос2|вопрос3|вопрос4|вопрос5|вопрос6
+        user_prompt = f"""КОНТЕКСТ:
+{context}
 
-Пример:
-УТОЧНЕНИЯ: Какие документы нужны?|Сроки подачи документов|Куда подавать документы?|Условия поступления|Вступительные испытания|Льготы при поступлении"""
-        
+ВОПРОС: {query}
+
+Дай полный и структурированный ответ на вопрос."""
+
         return system_prompt, user_prompt
     
+    def clarify_question(self, query: str, top_k: int = 10) -> dict:
+        """
+        Первый этап: определяет, нужно ли уточнение, и возвращает варианты.
+        
+        Returns:
+            {
+                'needs_clarification': bool,
+                'clarification_text': str,  # "Вы хотите узнать:"
+                'options': list[str],       # варианты для кнопок
+                'context_items': list,      # сохраняем для второго этапа
+            }
+        """
+        context_items = self.search_engine.retrieve_context(query, top_k=top_k)
+        
+        if not context_items:
+            return {
+                'needs_clarification': False,
+                'clarification_text': '',
+                'options': [],
+                'context_items': []
+            }
+        
+        formatted_context = self._format_context(context_items)
+        system_prompt, user_prompt = self._build_clarification_prompt(query, formatted_context)
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.3,  # Низкая температура для стабильности
+                max_tokens=300
+            )
+            
+            result = response.choices[0].message.content.strip()
+            
+            # Парсим ответ
+            if "КОНКРЕТНЫЙ:" in result:
+                return {
+                    'needs_clarification': False,
+                    'clarification_text': '',
+                    'options': [],
+                    'context_items': context_items
+                }
+            
+            # Извлекаем уточнение и варианты
+            clarification_text = "Вы хотите узнать:"
+            options = []
+            
+            if "УТОЧНЕНИЕ:" in result:
+                parts = result.split("УТОЧНЕНИЕ:")
+                if len(parts) > 1:
+                    clarification_part = parts[1].split("ВАРИАНТЫ:")[0].strip()
+                    if clarification_part:
+                        clarification_text = clarification_part
+            
+            if "ВАРИАНТЫ:" in result:
+                variants_part = result.split("ВАРИАНТЫ:")[-1].strip()
+                options = [v.strip() for v in variants_part.split("|") if v.strip()]
+                options = options[:5]  # Максимум 5 вариантов
+            
+            return {
+                'needs_clarification': len(options) > 0,
+                'clarification_text': clarification_text,
+                'options': options,
+                'context_items': context_items
+            }
+            
+        except Exception as e:
+            # При ошибке — не уточняем, сразу отвечаем
+            return {
+                'needs_clarification': False,
+                'clarification_text': '',
+                'options': [],
+                'context_items': context_items
+            }
+
     def generate_answer(
         self,
         query: str,
         top_k: int = 10,
-        use_reranker: bool = False
+        context_items: Optional[List[dict]] = None
     ) -> dict:
-        # Получаем релевантный контекст через гибридный поиск
-        context_items = self.search_engine.retrieve_context(query, top_k=top_k)
+        """
+        Генерирует ответ на вопрос.
+        
+        Args:
+            query: Вопрос пользователя
+            top_k: Количество чанков для поиска
+            context_items: Предварительно загруженный контекст (из clarify_question)
+        """
+        # Используем переданный контекст или получаем новый
+        if context_items is None:
+            context_items = self.search_engine.retrieve_context(query, top_k=top_k)
         
         if not context_items:
             return {
                 'answer': 'Извините, не удалось найти релевантную информацию для ответа на ваш вопрос.',
                 'sources': [],
-                'context_used': '',
-                'follow_up_questions': []
+                'context_used': ''
             }
         
-        # Форматируем контекст
         formatted_context = self._format_context(context_items)
+        system_prompt, user_prompt = self._build_answer_prompt(query, formatted_context)
         
-        # Строим промпт
-        system_prompt, user_prompt = self._build_prompt(query, formatted_context)
-        
-        # Генерируем ответ через OpenAI API
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -150,27 +239,8 @@ class RAGChain:
                 max_tokens=self.max_tokens
             )
             
-            full_response = response.choices[0].message.content.strip()
+            answer = response.choices[0].message.content.strip()
             
-            # Извлекаем уточняющие вопросы из ответа
-            follow_up_questions = []
-            answer = full_response
-            
-            if "УТОЧНЕНИЯ:" in full_response or "уточнения:" in full_response.lower():
-                # Разделяем ответ и уточнения
-                parts = full_response.split("УТОЧНЕНИЯ:")
-                if len(parts) == 1:
-                    parts = full_response.split("уточнения:")
-                
-                if len(parts) == 2:
-                    answer = parts[0].strip()
-                    questions_str = parts[1].strip()
-                    # Разделяем вопросы по символу |
-                    follow_up_questions = [q.strip() for q in questions_str.split("|") if q.strip()]
-                    # Ограничиваем до 6 вопросов
-                    follow_up_questions = follow_up_questions[:6]
-            
-            # Формируем список источников
             sources = [
                 {
                     'doc_id': item.get('doc_id', ''),
@@ -184,52 +254,25 @@ class RAGChain:
             return {
                 'answer': answer,
                 'sources': sources,
-                'context_used': formatted_context,
-                'follow_up_questions': follow_up_questions if follow_up_questions else []
+                'context_used': formatted_context
             }
             
         except Exception as e:
             error_str = str(e)
             
-            # Определяем тип ошибки и формируем понятное сообщение
             if "401" in error_str or "invalid_api_key" in error_str.lower() or "incorrect api key" in error_str.lower():
-                error_msg = """❌ **Ошибка аутентификации API ключа**
-
-Ваш API ключ недействителен или неверен. Пожалуйста, проверьте:
-
-1. **Правильность ключа** - убедитесь, что вы скопировали ключ полностью без пробелов
-2. **Переменную окружения** - ключ должен быть установлен как `OPENAI_API_KEY` или `OPENROUTER_API_KEY`
-3. **Файл .env** - если используете .env файл, убедитесь, что он находится в корне проекта
-4. **Доступ к сервису** - проверьте, что ключ имеет доступ к используемой модели
-
-Получить новый ключ можно на:
-- OpenAI: https://platform.openai.com/account/api-keys
-- OpenRouter: https://openrouter.ai/keys"""
+                error_msg = "❌ **Ошибка аутентификации API ключа.** Проверьте переменную окружения OPENAI_API_KEY."
             elif "429" in error_str or "rate limit" in error_str.lower():
-                error_msg = """⚠️ **Превышен лимит запросов**
-
-Вы превысили лимит запросов к API. Подождите немного и попробуйте снова."""
+                error_msg = "⚠️ **Превышен лимит запросов.** Подождите немного и попробуйте снова."
             elif "model" in error_str.lower() and ("not found" in error_str.lower() or "invalid" in error_str.lower()):
-                error_msg = f"""❌ **Ошибка выбора модели**
-
-Указанная модель недоступна или не найдена. Ошибка: {error_str}
-
-Проверьте название модели в настройках приложения."""
+                error_msg = f"❌ **Модель недоступна.** {error_str}"
             else:
-                error_msg = f"""❌ **Произошла ошибка при генерации ответа**
-
-{error_str}
-
-Если ошибка повторяется, пожалуйста, проверьте:
-- Статус API сервиса
-- Корректность настроек подключения
-- Интернет-соединение"""
+                error_msg = f"❌ **Ошибка:** {error_str}"
             
             return {
                 'answer': error_msg,
                 'sources': [],
                 'context_used': formatted_context,
-                'follow_up_questions': [],
                 'error': True
             }
 
